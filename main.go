@@ -3,11 +3,13 @@ package main
 import (
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/appleboy/easyssh-proxy"
 	"github.com/joho/godotenv"
 	"github.com/urfave/cli/v2"
+	"github.com/yassinebenaid/godump"
 )
 
 // Version set at compile-time
@@ -21,10 +23,14 @@ func main() {
 		_ = godotenv.Load(filename)
 	}
 
+	if _, err := os.Stat("/run/drone/env"); err == nil {
+		_ = godotenv.Overload("/run/drone/env")
+	}
+
 	app := cli.NewApp()
 	app.Name = "Drone SCP"
 	app.Usage = "Copy files and artifacts via SSH."
-	app.Copyright = "Copyright (c) 2020 Bo-Yi Wu"
+	app.Copyright = "Copyright (c) " + strconv.Itoa(time.Now().Year()) + " Bo-Yi Wu"
 	app.Version = Version
 	app.Authors = []*cli.Author{
 		{
@@ -36,219 +42,251 @@ func main() {
 	app.Version = Version
 	app.Flags = []cli.Flag{
 		&cli.StringSliceFlag{
-			Name:     "host, H",
-			Usage:    "Server host",
-			EnvVars:  []string{"PLUGIN_HOST", "SCP_HOST", "SSH_HOST", "HOST", "INPUT_HOST"},
+			Name:     "host",
+			Aliases:  []string{"H"},
+			Usage:    "Remote server host address or IP",
+			EnvVars:  []string{"PLUGIN_HOST", "SSH_HOST", "INPUT_HOST"},
 			FilePath: ".host",
 		},
-		&cli.StringFlag{
-			Name:    "port, P",
-			Value:   "22",
-			Usage:   "Server port, default to 22",
-			EnvVars: []string{"PLUGIN_PORT", "SCP_PORT", "SSH_PORT", "PORT", "INPUT_PORT"},
-		},
-		&cli.StringFlag{
-			Name:    "username, u",
-			Usage:   "Server username",
-			EnvVars: []string{"PLUGIN_USERNAME", "PLUGIN_USER", "SCP_USERNAME", "SSH_USERNAME", "USERNAME", "INPUT_USERNAME"},
-		},
-		&cli.StringFlag{
-			Name:    "password, p",
-			Usage:   "Password for password-based authentication",
-			EnvVars: []string{"PLUGIN_PASSWORD", "SCP_PASSWORD", "SSH_PASSWORD", "PASSWORD", "INPUT_PASSWORD"},
-		},
-		&cli.StringSliceFlag{
-			Name:    "ciphers",
-			Usage:   "The allowed cipher algorithms. If unspecified then a sensible",
-			EnvVars: []string{"PLUGIN_CIPHERS", "SSH_CIPHERS", "CIPHERS", "INPUT_CIPHERS"},
-		},
-		&cli.BoolFlag{
-			Name:    "useInsecureCipher",
-			Usage:   "include more ciphers with use_insecure_cipher",
-			EnvVars: []string{"PLUGIN_USE_INSECURE_CIPHER", "SSH_USE_INSECURE_CIPHER", "USE_INSECURE_CIPHER", "INPUT_USE_INSECURE_CIPHER"},
-		},
-		&cli.StringFlag{
-			Name:    "fingerprint",
-			Usage:   "fingerprint SHA256 of the host public key, default is to skip verification",
-			EnvVars: []string{"PLUGIN_FINGERPRINT", "SSH_FINGERPRINT", "FINGERPRINT", "INPUT_FINGERPRINT"},
-		},
-		&cli.DurationFlag{
-			Name:    "timeout",
-			Usage:   "connection timeout",
-			EnvVars: []string{"PLUGIN_TIMEOUT", "SCP_TIMEOUT", "INPUT_TIMEOUT"},
-			Value:   30 * time.Second,
-		},
-		&cli.DurationFlag{
-			Name:    "command.timeout",
-			Usage:   "command timeout",
-			EnvVars: []string{"PLUGIN_COMMAND_TIMEOUT", "SSH_COMMAND_TIMEOUT", "INPUT_COMMAND_TIMEOUT"},
-			Value:   10 * time.Minute,
-		},
-		&cli.StringFlag{
-			Name:    "ssh-key, k",
-			Usage:   "ssh private key",
-			EnvVars: []string{"PLUGIN_SSH_KEY,", "PLUGIN_KEY", "SCP_KEY", "SSH_KEY", "KEY", "INPUT_KEY"},
-		},
-		&cli.StringFlag{
-			Name:    "ssh-passphrase",
-			Usage:   "The purpose of the passphrase is usually to encrypt the private key.",
-			EnvVars: []string{"PLUGIN_SSH_PASSPHRASE", "PLUGIN_PASSPHRASE", "SSH_PASSPHRASE", "PASSPHRASE", "INPUT_PASSPHRASE"},
-		},
-		&cli.StringFlag{
-			Name:    "key-path, i",
-			Usage:   "ssh private key path",
-			EnvVars: []string{"PLUGIN_KEY_PATH", "SCP_KEY_PATH", "SSH_KEY_PATH", "INPUT_KEY_PATH"},
-		},
-		&cli.StringSliceFlag{
-			Name:    "target, t",
-			Usage:   "Target path on the server",
-			EnvVars: []string{"PLUGIN_TARGET", "SCP_TARGET", "TARGET", "INPUT_TARGET"},
-		},
-		&cli.StringSliceFlag{
-			Name:    "source, s",
-			Usage:   "scp file list",
-			EnvVars: []string{"PLUGIN_SOURCE", "SCP_SOURCE", "SOURCE", "INPUT_SOURCE"},
-		},
-		&cli.BoolFlag{
-			Name:    "rm, r",
-			Usage:   "remove target folder before upload data",
-			EnvVars: []string{"PLUGIN_RM", "SCP_RM", "RM", "INPUT_RM"},
-		},
-		&cli.StringFlag{
-			Name:    "repo.owner",
-			Usage:   "repository owner",
-			EnvVars: []string{"DRONE_REPO_OWNER"},
-		},
-		&cli.StringFlag{
-			Name:    "repo.name",
-			Usage:   "repository name",
-			EnvVars: []string{"DRONE_REPO_NAME"},
-		},
-		&cli.StringFlag{
-			Name:    "commit.sha",
-			Usage:   "git commit sha",
-			EnvVars: []string{"DRONE_COMMIT_SHA"},
-		},
-		&cli.StringFlag{
-			Name:    "commit.branch",
-			Value:   "master",
-			Usage:   "git commit branch",
-			EnvVars: []string{"DRONE_COMMIT_BRANCH"},
-		},
-		&cli.StringFlag{
-			Name:    "commit.author",
-			Usage:   "git author name",
-			EnvVars: []string{"DRONE_COMMIT_AUTHOR"},
-		},
-		&cli.StringFlag{
-			Name:    "commit.message",
-			Usage:   "commit message",
-			EnvVars: []string{"DRONE_COMMIT_MESSAGE"},
-		},
-		&cli.StringFlag{
-			Name:    "build.event",
-			Value:   "push",
-			Usage:   "build event",
-			EnvVars: []string{"DRONE_BUILD_EVENT"},
-		},
 		&cli.IntFlag{
-			Name:    "build.number",
-			Usage:   "build number",
-			EnvVars: []string{"DRONE_BUILD_NUMBER"},
+			Name:    "port",
+			Aliases: []string{"p"},
+			Usage:   "SSH port number (default: 22)",
+			EnvVars: []string{"PLUGIN_PORT", "SSH_PORT", "INPUT_PORT"},
+			Value:   22,
 		},
 		&cli.StringFlag{
-			Name:    "build.status",
-			Usage:   "build status",
-			Value:   "success",
-			EnvVars: []string{"DRONE_BUILD_STATUS"},
+			Name:    "protocol",
+			Usage:   "Network protocol to use (tcp, tcp4, tcp6)",
+			EnvVars: []string{"PLUGIN_PROTOCOL", "SSH_PROTOCOL", "INPUT_PROTOCOL"},
+			Value:   "tcp",
 		},
 		&cli.StringFlag{
-			Name:    "build.link",
-			Usage:   "build link",
-			EnvVars: []string{"DRONE_BUILD_LINK"},
-		},
-		&cli.StringFlag{
-			Name:    "proxy.ssh-key",
-			Usage:   "private ssh key of proxy",
-			EnvVars: []string{"PLUGIN_PROXY_SSH_KEY", "PLUGIN_PROXY_KEY", "PROXY_SSH_KEY", "PROXY_KEY", "INPUT_PROXY_KEY"},
-		},
-		&cli.StringFlag{
-			Name:    "proxy.ssh-passphrase",
-			Usage:   "The purpose of the passphrase is usually to encrypt the private key.",
-			EnvVars: []string{"PLUGIN_PROXY_SSH_PASSPHRASE", "PLUGIN_PROXY_PASSPHRASE", "PROXY_SSH_PASSPHRASE", "PROXY_PASSPHRASE", "INPUT_PROXY_PASSPHRASE"},
-		},
-		&cli.StringFlag{
-			Name:    "proxy.key-path",
-			Usage:   "ssh private key path of proxy",
-			EnvVars: []string{"PLUGIN_PROXY_KEY_PATH", "PROXY_SSH_KEY_PATH", "INPUT_PROXY_KEY_PATH"},
-		},
-		&cli.StringFlag{
-			Name:    "proxy.username",
-			Usage:   "connect as user of proxy",
-			EnvVars: []string{"PLUGIN_PROXY_USERNAME", "PLUGIN_PROXY_USER", "PROXY_SSH_USERNAME", "PROXY_USERNAME", "INPUT_PROXY_USERNAME"},
+			Name:    "username",
+			Aliases: []string{"user", "u"},
+			Usage:   "SSH username for authentication",
+			EnvVars: []string{"PLUGIN_USERNAME", "PLUGIN_USER", "SSH_USERNAME", "INPUT_USERNAME"},
 			Value:   "root",
 		},
 		&cli.StringFlag{
-			Name:    "proxy.password",
-			Usage:   "user password of proxy",
-			EnvVars: []string{"PLUGIN_PROXY_PASSWORD", "PROXY_SSH_PASSWORD", "PROXY_PASSWORD", "INPUT_PROXY_PASSWORD"},
+			Name:    "password",
+			Aliases: []string{"P"},
+			Usage:   "SSH password for authentication",
+			EnvVars: []string{"PLUGIN_PASSWORD", "SSH_PASSWORD", "INPUT_PASSWORD"},
+		},
+		&cli.DurationFlag{
+			Name:    "timeout",
+			Usage:   "SSH connection timeout duration (default: 30s)",
+			EnvVars: []string{"PLUGIN_TIMEOUT", "SSH_TIMEOUT", "INPUT_TIMEOUT"},
+			Value:   30 * time.Second,
 		},
 		&cli.StringFlag{
-			Name:    "proxy.host",
-			Usage:   "connect to host of proxy",
-			EnvVars: []string{"PLUGIN_PROXY_HOST", "PROXY_SSH_HOST", "PROXY_HOST", "INPUT_PROXY_HOST"},
+			Name:    "ssh-key",
+			Usage:   "SSH private key content for authentication",
+			EnvVars: []string{"PLUGIN_SSH_KEY", "PLUGIN_KEY", "SSH_KEY", "INPUT_KEY"},
+		},
+		&cli.StringFlag{
+			Name:  "ssh-passphrase",
+			Usage: "Passphrase to decrypt the SSH private key",
+			EnvVars: []string{
+				"PLUGIN_SSH_PASSPHRASE",
+				"PLUGIN_PASSPHRASE",
+				"SSH_PASSPHRASE",
+				"INPUT_PASSPHRASE",
+			},
+		},
+		&cli.StringFlag{
+			Name:    "key-path",
+			Aliases: []string{"i"},
+			Usage:   "Path to SSH private key file",
+			EnvVars: []string{"PLUGIN_KEY_PATH", "SSH_KEY_PATH", "INPUT_KEY_PATH"},
 		},
 		&cli.StringSliceFlag{
-			Name:    "proxy.ciphers",
-			Usage:   "The allowed cipher algorithms. If unspecified then a sensible",
-			EnvVars: []string{"PLUGIN_PROXY_CIPHERS", "PROXY_SSH_CIPHERS", "PROXY_CIPHERS", "INPUT_PROXY_CIPHERS"},
+			Name:    "ciphers",
+			Usage:   "List of allowed SSH encryption algorithms",
+			EnvVars: []string{"PLUGIN_CIPHERS", "SSH_CIPHERS", "INPUT_CIPHERS"},
 		},
 		&cli.BoolFlag{
-			Name:    "proxy.useInsecureCipher",
-			Usage:   "include more ciphers with use_insecure_cipher",
-			EnvVars: []string{"PLUGIN_PROXY_USE_INSECURE_CIPHER", "SSH_PROXY_USE_INSECURE_CIPHER", "PROXY_USE_INSECURE_CIPHER", "INPUT_PROXY_USE_INSECURE_CIPHER"},
+			Name:  "useInsecureCipher",
+			Usage: "Enable less secure encryption algorithms (not recommended)",
+			EnvVars: []string{
+				"PLUGIN_USE_INSECURE_CIPHER",
+				"SSH_USE_INSECURE_CIPHER",
+				"INPUT_USE_INSECURE_CIPHER",
+			},
 		},
 		&cli.StringFlag{
-			Name:    "proxy.fingerprint",
-			Usage:   "fingerprint SHA256 of the host public key, default is to skip verification",
-			EnvVars: []string{"PLUGIN_PROXY_FINGERPRINT", "SSH_PROXY_FINGERPRINT", "PROXY_FINGERPRINT", "INPUT_PROXY_FINGERPRINT"},
+			Name:    "fingerprint",
+			Usage:   "SHA256 fingerprint of host public key for verification",
+			EnvVars: []string{"PLUGIN_FINGERPRINT", "SSH_FINGERPRINT", "INPUT_FINGERPRINT"},
+		},
+		&cli.DurationFlag{
+			Name:  "command.timeout",
+			Usage: "Maximum time allowed for command execution (default: 10m)",
+			EnvVars: []string{
+				"PLUGIN_COMMAND_TIMEOUT",
+				"SSH_COMMAND_TIMEOUT",
+				"INPUT_COMMAND_TIMEOUT",
+			},
+			Value: 10 * time.Minute,
+		},
+		&cli.StringSliceFlag{
+			Name:    "target",
+			Aliases: []string{"t"},
+			Usage:   "Destination path on remote server",
+			EnvVars: []string{"PLUGIN_TARGET", "SSH_TARGET", "INPUT_TARGET"},
+		},
+		&cli.StringSliceFlag{
+			Name:    "source",
+			Aliases: []string{"s"},
+			Usage:   "Local files/directories to copy",
+			EnvVars: []string{"PLUGIN_SOURCE", "SCP_SOURCE", "INPUT_SOURCE"},
+		},
+		&cli.BoolFlag{
+			Name:    "rm",
+			Aliases: []string{"r"},
+			Usage:   "Delete destination folder before copying",
+			EnvVars: []string{"PLUGIN_RM", "SCP_RM", "INPUT_RM"},
+		},
+		// Proxy settings remain the same as they are already clear
+		&cli.StringFlag{
+			Name:    "proxy.host",
+			Usage:   "Proxy server host address or IP",
+			EnvVars: []string{"PLUGIN_PROXY_HOST", "PROXY_SSH_HOST", "INPUT_PROXY_HOST"},
 		},
 		&cli.StringFlag{
 			Name:    "proxy.port",
-			Usage:   "connect to port of proxy",
-			EnvVars: []string{"PLUGIN_PROXY_PORT", "PROXY_SSH_PORT", "PROXY_PORT", "INPUT_PROXY_PORT"},
+			Usage:   "Proxy server SSH port (default: 22)",
+			EnvVars: []string{"PLUGIN_PROXY_PORT", "PROXY_SSH_PORT", "INPUT_PROXY_PORT"},
 			Value:   "22",
+		},
+		&cli.StringFlag{
+			Name:  "proxy.protocol",
+			Usage: "The IP protocol to use for the proxy. Valid values are \"tcp\". \"tcp4\" or \"tcp6\". Default to tcp.",
+			EnvVars: []string{
+				"PLUGIN_PROXY_PROTOCOL",
+				"SSH_PROXY_PROTOCOL",
+				"INPUT_PROXY_PROTOCOL",
+			},
+			Value: "tcp",
+		},
+		&cli.StringFlag{
+			Name:  "proxy.username",
+			Usage: "connect as user of proxy",
+			EnvVars: []string{
+				"PLUGIN_PROXY_USERNAME",
+				"PLUGIN_PROXY_USER",
+				"PROXY_SSH_USERNAME",
+				"INPUT_PROXY_USERNAME",
+			},
+			Value: "root",
+		},
+		&cli.StringFlag{
+			Name:  "proxy.password",
+			Usage: "user password of proxy",
+			EnvVars: []string{
+				"PLUGIN_PROXY_PASSWORD",
+				"PROXY_SSH_PASSWORD",
+				"INPUT_PROXY_PASSWORD",
+			},
+		},
+		&cli.StringFlag{
+			Name:  "proxy.ssh-key",
+			Usage: "private ssh key of proxy",
+			EnvVars: []string{
+				"PLUGIN_PROXY_SSH_KEY",
+				"PLUGIN_PROXY_KEY",
+				"PROXY_SSH_KEY",
+				"INPUT_PROXY_KEY",
+			},
+		},
+		&cli.StringFlag{
+			Name:  "proxy.ssh-passphrase",
+			Usage: "The purpose of the passphrase is usually to encrypt the private key.",
+			EnvVars: []string{
+				"PLUGIN_PROXY_SSH_PASSPHRASE",
+				"PLUGIN_PROXY_PASSPHRASE",
+				"PROXY_SSH_PASSPHRASE",
+				"INPUT_PROXY_PASSPHRASE",
+			},
+		},
+		&cli.StringFlag{
+			Name:  "proxy.key-path",
+			Usage: "ssh private key path of proxy",
+			EnvVars: []string{
+				"PLUGIN_PROXY_KEY_PATH",
+				"PROXY_SSH_KEY_PATH",
+				"INPUT_PROXY_KEY_PATH",
+			},
 		},
 		&cli.DurationFlag{
 			Name:    "proxy.timeout",
 			Usage:   "proxy connection timeout",
 			EnvVars: []string{"PLUGIN_PROXY_TIMEOUT", "PROXY_SSH_TIMEOUT", "INPUT_PROXY_TIMEOUT"},
 		},
+		&cli.StringSliceFlag{
+			Name:    "proxy.ciphers",
+			Usage:   "The allowed cipher algorithms. If unspecified then a sensible",
+			EnvVars: []string{"PLUGIN_PROXY_CIPHERS", "PROXY_SSH_CIPHERS", "INPUT_PROXY_CIPHERS"},
+		},
+		&cli.BoolFlag{
+			Name:  "proxy.useInsecureCipher",
+			Usage: "include more ciphers with use_insecure_cipher",
+			EnvVars: []string{
+				"PLUGIN_PROXY_USE_INSECURE_CIPHER",
+				"PROXY_SSH_USE_INSECURE_CIPHER",
+				"INPUT_PROXY_USE_INSECURE_CIPHER",
+			},
+		},
+		&cli.StringFlag{
+			Name:  "proxy.fingerprint",
+			Usage: "fingerprint SHA256 of the host public key, default is to skip verification",
+			EnvVars: []string{
+				"PLUGIN_PROXY_FINGERPRINT",
+				"PROXY_SSH_FINGERPRINT",
+				"PROXY_FINGERPRINT",
+				"INPUT_PROXY_FINGERPRINT",
+			},
+		},
 		&cli.IntFlag{
-			Name:    "strip.components",
-			Usage:   "Remove the specified number of leading path elements.",
-			EnvVars: []string{"PLUGIN_STRIP_COMPONENTS", "TAR_STRIP_COMPONENTS", "INPUT_STRIP_COMPONENTS"},
+			Name:  "strip.components",
+			Usage: "Strip N leading components from file paths",
+			EnvVars: []string{
+				"PLUGIN_STRIP_COMPONENTS",
+				"TAR_STRIP_COMPONENTS",
+				"INPUT_STRIP_COMPONENTS",
+			},
 		},
 		&cli.StringFlag{
 			Name:    "tar.exec",
-			Usage:   "Alternative `tar` executable to on the dest host",
-			EnvVars: []string{"PLUGIN_TAR_EXEC", "SCP_TAR_EXEC", "INPUT_TAR_EXEC"},
+			Usage:   "Custom tar executable path on remote host",
+			EnvVars: []string{"PLUGIN_TAR_EXEC", "SSH_TAR_EXEC", "INPUT_TAR_EXEC"},
 			Value:   "tar",
 		},
 		&cli.StringFlag{
 			Name:    "tar.tmp-path",
-			Usage:   "Temporary path for tar file on the dest host",
-			EnvVars: []string{"PLUGIN_TAR_TMP_PATH", "SCP_TAR_TMP_PATH"},
+			Usage:   "Temporary directory for tar files on remote host",
+			EnvVars: []string{"PLUGIN_TAR_TMP_PATH", "SSH_TAR_TMP_PATH", "INPUT_TAR_TMP_PATH"},
 		},
 		&cli.BoolFlag{
 			Name:    "debug",
-			Usage:   "remove target folder before upload data",
-			EnvVars: []string{"PLUGIN_DEBUG", "DEBUG", "INPUT_DEBUG"},
+			Usage:   "Enable debug logging",
+			EnvVars: []string{"PLUGIN_DEBUG", "INPUT_DEBUG"},
 		},
 		&cli.BoolFlag{
 			Name:    "overwrite",
-			Usage:   "use --overwrite flag with tar",
-			EnvVars: []string{"PLUGIN_OVERWRITE", "SCP_OVERWRITE", "INPUT_OVERWRITE"},
+			Usage:   "Force overwrite of existing files",
+			EnvVars: []string{"PLUGIN_OVERWRITE", "INPUT_OVERWRITE"},
+		},
+		&cli.BoolFlag{
+			Name:    "unlink.first",
+			Usage:   "Remove files before extracting new ones",
+			EnvVars: []string{"PLUGIN_UNLINK_FIRST", "INPUT_UNLINK_FIRST"},
+		},
+		&cli.BoolFlag{
+			Name:    "tar.dereference",
+			Usage:   "Follow symbolic links when copying",
+			EnvVars: []string{"PLUGIN_TAR_DEREFERENCE", "INPUT_TAR_DEREFERENCE"},
 		},
 	}
 
@@ -292,23 +330,10 @@ REPOSITORY:
 
 func run(c *cli.Context) error {
 	plugin := Plugin{
-		Repo: Repo{
-			Owner: c.String("repo.owner"),
-			Name:  c.String("repo.name"),
-		},
-		Build: Build{
-			Number:  c.Int("build.number"),
-			Event:   c.String("build.event"),
-			Status:  c.String("build.status"),
-			Commit:  c.String("commit.sha"),
-			Branch:  c.String("commit.branch"),
-			Author:  c.String("commit.author"),
-			Message: c.String("commit.message"),
-			Link:    c.String("build.link"),
-		},
 		Config: Config{
 			Host:              c.StringSlice("host"),
-			Port:              c.String("port"),
+			Port:              c.Int("port"),
+			Protocol:          easyssh.Protocol(c.String("protocol")),
 			Username:          c.String("username"),
 			Password:          c.String("password"),
 			Passphrase:        c.String("ssh-passphrase"),
@@ -325,8 +350,10 @@ func run(c *cli.Context) error {
 			TarExec:           c.String("tar.exec"),
 			TarTmpPath:        c.String("tar.tmp-path"),
 			Overwrite:         c.Bool("overwrite"),
+			UnlinkFirst:       c.Bool("unlink.first"),
 			Ciphers:           c.StringSlice("ciphers"),
 			UseInsecureCipher: c.Bool("useInsecureCipher"),
+			TarDereference:    c.Bool("tar.dereference"),
 			Proxy: easyssh.DefaultConfig{
 				Key:               c.String("proxy.ssh-key"),
 				Passphrase:        c.String("proxy.ssh-passphrase"),
@@ -336,11 +363,16 @@ func run(c *cli.Context) error {
 				Password:          c.String("proxy.password"),
 				Server:            c.String("proxy.host"),
 				Port:              c.String("proxy.port"),
+				Protocol:          easyssh.Protocol(c.String("proxy.protocol")),
 				Timeout:           c.Duration("proxy.timeout"),
 				Ciphers:           c.StringSlice("proxy.ciphers"),
 				UseInsecureCipher: c.Bool("proxy.useInsecureCipher"),
 			},
 		},
+	}
+
+	if plugin.Config.Debug {
+		_ = godump.Dump(plugin)
 	}
 
 	return plugin.Exec()

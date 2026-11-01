@@ -1,0 +1,64 @@
+name: Lint and Testing
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: |
+            go.sum
+            go.tools.sum
+
+      - name: Run golangci-lint
+        run: make lint
+
+      - name: Check Go formatting
+        run: make fmt-check
+
+      - uses: hadolint/hadolint-action@v3.4.0
+        name: hadolint for Dockerfile
+        with:
+          dockerfile: docker/Dockerfile
+
+      # This step uses the Bearer GitHub Action to scan for sensitive data in the codebase.
+      # The 'uses' keyword specifies the action to be used, in this case, 'bearer/bearer-action' at version 'v2'.
+      # The 'with' keyword provides input parameters for the action:
+      # - 'diff: true' indicates that the action should only scan the changes in the current pull request or commit.
+      - name: Bearer
+        uses: bearer/bearer-action@v2
+        with:
+          diff: true
+
+  testing:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.26", "1.27"]
+    container:
+      image: golang:${{ matrix.go-version }}-alpine
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: setup sshd server
+        run: |
+          apk add git make curl perl bash build-base zlib-dev ucl-dev gpg
+          make ssh-server
+
+      - name: testing
+        run: |
+          make test
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7

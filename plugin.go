@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,35 +17,19 @@ import (
 )
 
 var (
-	errMissingHost           = errors.New("Error: missing server host")
-	errMissingPasswordOrKey  = errors.New("Error: can't connect without a private SSH key or password")
-	errSetPasswordandKey     = errors.New("can't set password and key at the same time")
+	errMissingHost          = errors.New("Error: missing server host")
+	errMissingPasswordOrKey = errors.New(
+		"Error: can't connect without a private SSH key or password",
+	)
 	errMissingSourceOrTarget = errors.New("missing source or target config")
 )
 
 type (
-	// Repo information.
-	Repo struct {
-		Owner string
-		Name  string
-	}
-
-	// Build information.
-	Build struct {
-		Event   string
-		Number  int
-		Commit  string
-		Message string
-		Branch  string
-		Author  string
-		Status  string
-		Link    string
-	}
-
 	// Config for the plugin.
 	Config struct {
 		Host              []string
-		Port              string
+		Port              int
+		Protocol          easyssh.Protocol
 		Username          string
 		Password          string
 		Key               string
@@ -64,14 +47,14 @@ type (
 		Proxy             easyssh.DefaultConfig
 		Debug             bool
 		Overwrite         bool
+		UnlinkFirst       bool
 		Ciphers           []string
 		UseInsecureCipher bool
+		TarDereference    bool
 	}
 
 	// Plugin values.
 	Plugin struct {
-		Repo     Repo
-		Build    Build
 		Config   Config
 		DestFile string
 	}
@@ -86,34 +69,24 @@ func (e copyError) Error() string {
 	return fmt.Sprintf("error copy file to dest: %s, error message: %s\n", e.host, e.message)
 }
 
-func trimPath(keys []string) []string {
-	var newKeys []string
-
-	for _, value := range keys {
-		value = strings.Trim(value, " ")
-		if len(value) == 0 {
-			continue
-		}
-
-		newKeys = append(newKeys, value)
-	}
-
-	return newKeys
-}
-
 func globList(paths []string) fileList {
 	var list fileList
 
 	for _, pattern := range paths {
 		ignore := false
-		pattern = strings.Trim(pattern, " ")
+		pattern = strings.TrimSpace(pattern)
 		if string(pattern[0]) == "!" {
 			pattern = pattern[1:]
 			ignore = true
 		}
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
-			fmt.Printf("Glob error for %q: %s\n", pattern, err)
+			//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
+			fmt.Printf(
+				"Glob error for %q: %s\n",
+				pattern,
+				err,
+			)
 			continue
 		}
 
@@ -127,32 +100,26 @@ func globList(paths []string) fileList {
 	return list
 }
 
-func buildArgs(tar string, files fileList) []string {
-	args := []string{}
-	if len(files.Ignore) > 0 {
-		for _, v := range files.Ignore {
-			args = append(args, "--exclude")
-			args = append(args, v)
-		}
-	}
-	args = append(args, "-cf")
-	args = append(args, getRealPath(tar))
-	args = append(args, files.Source...)
-
-	return args
-}
-
-func (p Plugin) log(host string, message ...interface{}) {
+func (p Plugin) log(host string, message ...any) {
 	if count := len(p.Config.Host); count == 1 {
-		fmt.Printf("%s", fmt.Sprintln(message...))
+		//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
+		fmt.Printf(
+			"%s",
+			fmt.Sprintln(message...),
+		)
 	} else {
-		fmt.Printf("%s: %s", host, fmt.Sprintln(message...))
+		//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
+		fmt.Printf(
+			"%s: %s",
+			host,
+			fmt.Sprintln(message...),
+		)
 	}
 }
 
-func (p *Plugin) removeDestFile(ssh *easyssh.MakeConfig) error {
+func (p *Plugin) removeDestFile(os string, ssh *easyssh.MakeConfig) error {
 	p.log(ssh.Server, "remove file", p.DestFile)
-	_, errStr, _, err := ssh.Run(fmt.Sprintf("rm -rf %s", p.DestFile), p.Config.CommandTimeout)
+	_, errStr, _, err := ssh.Run(rmcmd(os, p.DestFile), p.Config.CommandTimeout)
 	if err != nil {
 		return err
 	}
@@ -165,12 +132,14 @@ func (p *Plugin) removeDestFile(ssh *easyssh.MakeConfig) error {
 }
 
 func (p *Plugin) removeAllDestFile() error {
-	for _, host := range p.Config.Host {
+	for _, h := range trimValues(p.Config.Host) {
+		host, port := p.hostPort(h)
 		ssh := &easyssh.MakeConfig{
 			Server:            host,
 			User:              p.Config.Username,
 			Password:          p.Config.Password,
-			Port:              p.Config.Port,
+			Port:              port,
+			Protocol:          p.Config.Protocol,
 			Key:               p.Config.Key,
 			KeyPath:           p.Config.KeyPath,
 			Passphrase:        p.Config.Passphrase,
@@ -183,6 +152,7 @@ func (p *Plugin) removeAllDestFile() error {
 				User:              p.Config.Proxy.User,
 				Password:          p.Config.Proxy.Password,
 				Port:              p.Config.Proxy.Port,
+				Protocol:          p.Config.Proxy.Protocol,
 				Key:               p.Config.Proxy.Key,
 				KeyPath:           p.Config.Proxy.KeyPath,
 				Passphrase:        p.Config.Proxy.Passphrase,
@@ -193,8 +163,14 @@ func (p *Plugin) removeAllDestFile() error {
 			},
 		}
 
+		_, _, _, err := ssh.Run("ver", p.Config.CommandTimeout)
+		systemType := "unix"
+		if err == nil {
+			systemType = "windows"
+		}
+
 		// remove tar file
-		err := p.removeDestFile(ssh)
+		err = p.removeDestFile(systemType, ssh)
 		if err != nil {
 			return err
 		}
@@ -208,12 +184,33 @@ type fileList struct {
 	Source []string
 }
 
-func (p *Plugin) buildArgs(target string) []string {
+func (p *Plugin) buildTarArgs(src string) []string {
+	files := globList(trimValues(p.Config.Source))
+	args := []string{}
+	if len(files.Ignore) > 0 {
+		for _, v := range files.Ignore {
+			args = append(args, "--exclude")
+			args = append(args, v)
+		}
+	}
+
+	if p.Config.TarDereference {
+		args = append(args, "--dereference")
+	}
+
+	args = append(args, "-zcf")
+	args = append(args, getRealPath(src))
+	args = append(args, files.Source...)
+
+	return args
+}
+
+func (p *Plugin) buildUnTarArgs(target string) []string {
 	args := []string{}
 
 	args = append(args,
 		p.Config.TarExec,
-		"-xf",
+		"-zxf",
 		p.DestFile,
 	)
 
@@ -226,6 +223,10 @@ func (p *Plugin) buildArgs(target string) []string {
 		args = append(args, "--overwrite")
 	}
 
+	if p.Config.UnlinkFirst {
+		args = append(args, "--unlink-first")
+	}
+
 	args = append(args,
 		"-C",
 		target,
@@ -236,38 +237,43 @@ func (p *Plugin) buildArgs(target string) []string {
 
 // Exec executes the plugin.
 func (p *Plugin) Exec() error {
-	if len(p.Config.Host) == 0 {
-		return errMissingHost
-	}
-
 	if len(p.Config.Key) == 0 && len(p.Config.Password) == 0 && len(p.Config.KeyPath) == 0 {
 		return errMissingPasswordOrKey
-	}
-
-	if len(p.Config.Key) != 0 && len(p.Config.Password) != 0 {
-		return errSetPasswordandKey
 	}
 
 	if len(p.Config.Source) == 0 || len(p.Config.Target) == 0 {
 		return errMissingSourceOrTarget
 	}
 
-	files := globList(trimPath(p.Config.Source))
-	p.DestFile = fmt.Sprintf("%s.tar", random.String(10))
+	hosts := trimValues(p.Config.Host)
+	if len(hosts) == 0 {
+		return errMissingHost
+	}
+
+	p.DestFile = random.String(10) + ".tar.gz"
 
 	// create a temporary file for the archive
-	dir, err := ioutil.TempDir("", "")
-	if err != nil {
-		return err
-	}
-	tar := filepath.Join(dir, p.DestFile)
+	dir := os.TempDir()
+	src := filepath.Join(dir, p.DestFile)
 
+	// show current version
+	//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
+	fmt.Println(
+		"drone-scp version: " + Version,
+	)
 	// run archive command
-	fmt.Println("tar all files into " + tar)
-	args := buildArgs(tar, files)
+	//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
+	fmt.Println(
+		"tar all files into " + src,
+	)
+	args := p.buildTarArgs(src)
 	cmd := exec.Command(p.Config.TarExec, args...)
 	if p.Config.Debug {
-		fmt.Println("$", strings.Join(cmd.Args, " "))
+		//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
+		fmt.Println(
+			"$",
+			strings.Join(cmd.Args, " "),
+		)
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -279,14 +285,16 @@ func (p *Plugin) Exec() error {
 	wg.Add(len(p.Config.Host))
 	errChannel := make(chan error)
 	finished := make(chan struct{})
-	for _, host := range p.Config.Host {
-		go func(host string) {
+	for _, host := range hosts {
+		go func(h string) {
+			defer wg.Done()
+			host, port := p.hostPort(h)
 			// Create MakeConfig instance with remote username, server address and path to private key.
 			ssh := &easyssh.MakeConfig{
 				Server:            host,
 				User:              p.Config.Username,
 				Password:          p.Config.Password,
-				Port:              p.Config.Port,
+				Port:              port,
 				Key:               p.Config.Key,
 				KeyPath:           p.Config.KeyPath,
 				Passphrase:        p.Config.Passphrase,
@@ -309,47 +317,58 @@ func (p *Plugin) Exec() error {
 				},
 			}
 
+			systemType := "unix"
+			_, _, _, err := ssh.Run("ver", p.Config.CommandTimeout)
+			if err == nil {
+				systemType = "windows"
+			}
+
 			// upload file to the tmp path
 			p.DestFile = fmt.Sprintf("%s%s", p.Config.TarTmpPath, p.DestFile)
 
+			p.log(host, "remote server os type is "+systemType)
 			// Call Scp method with file you want to upload to remote server.
 			p.log(host, "scp file to server.")
-			err := ssh.Scp(tar, p.DestFile)
+			err = ssh.Scp(src, p.DestFile)
 			if err != nil {
 				errChannel <- copyError{host, err.Error()}
 				return
 			}
 
 			for _, target := range p.Config.Target {
-				// remove target before upload data
+				target = strings.ReplaceAll(target, " ", "\\ ")
+				// remove target folder before upload data
 				if p.Config.Remove {
 					p.log(host, "Remove target folder:", target)
 
-					_, _, _, err := ssh.Run(fmt.Sprintf("rm -rf %s", target), p.Config.CommandTimeout)
+					_, _, _, err := ssh.Run(rmcmd(systemType, target), p.Config.CommandTimeout)
 					if err != nil {
 						errChannel <- err
 						return
 					}
 				}
 
-				// mkdir path
 				p.log(host, "create folder", target)
-				_, errStr, _, err := ssh.Run(fmt.Sprintf("mkdir -p %s", target), p.Config.CommandTimeout)
+				_, errStr, _, err := ssh.Run(mkdircmd(systemType, target), p.Config.CommandTimeout)
 				if err != nil {
 					errChannel <- err
 					return
 				}
 
 				if len(errStr) != 0 {
-					errChannel <- fmt.Errorf(errStr)
+					errChannel <- fmt.Errorf("%s", errStr)
 					return
 				}
 
 				// untar file
 				p.log(host, "untar file", p.DestFile)
-				commamd := strings.Join(p.buildArgs(target), " ")
+				commamd := strings.Join(p.buildUnTarArgs(target), " ")
 				if p.Config.Debug {
-					fmt.Println("$", commamd)
+					//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
+					fmt.Println(
+						"$",
+						commamd,
+					)
 				}
 				outStr, errStr, _, err := ssh.Run(commamd, p.Config.CommandTimeout)
 
@@ -368,13 +387,11 @@ func (p *Plugin) Exec() error {
 			}
 
 			// remove tar file
-			err = p.removeDestFile(ssh)
+			err = p.removeDestFile(systemType, ssh)
 			if err != nil {
 				errChannel <- err
 				return
 			}
-
-			wg.Done()
 		}(host)
 	}
 
@@ -389,7 +406,8 @@ func (p *Plugin) Exec() error {
 		if err != nil {
 			c := color.New(color.FgRed)
 			c.Println("drone-scp error: ", err)
-			if _, ok := err.(copyError); !ok {
+			if _, ok := errors.AsType[copyError](err); !ok {
+				//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
 				fmt.Println("drone-scp rollback: remove all target tmp file")
 				if err := p.removeAllDestFile(); err != nil {
 					return err
@@ -399,9 +417,44 @@ func (p *Plugin) Exec() error {
 		}
 	}
 
+	//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
 	fmt.Println("===================================================")
-	fmt.Println("✅ Successfully executed transfer data to all host")
-	fmt.Println("===================================================")
+	//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
+	fmt.Println(
+		"✅ Successfully executed transfer data to all host",
+	)
+	//nolint:forbidigo // Preserve the plugin CLI output format on stdout.
+	fmt.Println(
+		"===================================================",
+	)
 
 	return nil
+}
+
+func (p Plugin) hostPort(host string) (string, string) {
+	hosts := strings.Split(host, ":")
+	port := strconv.Itoa(p.Config.Port)
+	if len(hosts) > 1 &&
+		(p.Config.Protocol == easyssh.PROTOCOL_TCP ||
+			p.Config.Protocol == easyssh.PROTOCOL_TCP4) {
+		host = hosts[0]
+		port = hosts[1]
+	}
+
+	return host, port
+}
+
+func trimValues(keys []string) []string {
+	var newKeys []string
+
+	for _, value := range keys {
+		value = strings.TrimSpace(value)
+		if len(value) == 0 {
+			continue
+		}
+
+		newKeys = append(newKeys, value)
+	}
+
+	return newKeys
 }
